@@ -1,83 +1,92 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import "./App.css";
 import {
   CashuMint,
   CashuWallet,
   Proof,
-  Token,
   getDecodedToken,
 } from "@cashu/cashu-ts";
-import { getPublicKey } from "nostr-tools";
-
-const encoder = new TextEncoder();
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 const mint = "https://testnut.cashu.space";
 
-function bytesToHex(bytes) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
-}
-
-function isValidP2pkToken(token: Token, pubkey: string) {
-  const tokenEntries = token.token;
+async function createSignedProofs(token: string) {
+  const decodedToken = getDecodedToken(token);
+  const tokenEntries = decodedToken.token;
   const proofs = tokenEntries.map((entry) => entry.proofs).flat();
+  const allSignedProofs: SignedProof[] = [];
   for (let i = 0; i < proofs.length; i++) {
-    const parsedSecret = JSON.parse(proofs[i].secret);
-    if (parsedSecret[0] !== "P2PK" || parsedSecret[1].data !== pubkey) {
-      return false;
-    }
+    const secret = proofs[i].secret;
+    const digest = bytesToHex(sha256(secret));
+    const albySignature = await window.nostr!.signSchnorr(digest);
+    const signedProof: SignedProof = {
+      ...proofs[i],
+      witness: JSON.stringify({ signatures: [albySignature] }),
+    };
+    allSignedProofs.push(signedProof);
   }
-  return true;
+  return allSignedProofs;
 }
 
-type SignedProof = Proof & { witness: { signatures: string[] } };
+// function isValidP2pkToken(token: Token, pubkey: string) {
+// const tokenEntries = token.token;
+// const proofs = tokenEntries.map((entry) => entry.proofs).flat();
+// for (let i = 0; i < proofs.length; i++) {
+// const parsedSecret = JSON.parse(proofs[i].secret);
+// if (parsedSecret[0] !== "P2PK" || parsedSecret[1].data !== pubkey) {
+// return false;
+//}
+//}
+// return true;
+// }
 
-async function createSignatures(token: Token) {
-  const tokenEntries = token.token;
-  const proofs = tokenEntries.map((entry) => entry.proofs).flat();
-  const signedProofs: SignedProof[] = [];
-  for (let i = 0; i < proofs.length; i++) {
-    const secretString = proofs[i].secret;
-    const secretBytes = encoder.encode(secretString);
-    const secretHashBytes = await crypto.subtle.digest("SHA-256", secretBytes);
-    const hashArray = Array.from(new Uint8Array(secretHashBytes));
-    const hashHex = hashArray
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    const signature = (await window.nostr.signSchnorr(hashHex)) as string;
-    const signedProof = { ...proofs[i], witness: { signatures: [signature] } };
-    signedProofs.push(signedProof);
-  }
-  return signedProofs;
-}
+type SignedProof = Proof & { witness: string };
 
 function App() {
   const [signedProofs, setSignedProofs] = useState<SignedProof[]>();
+  const [error, setError] = useState<string>();
   const inputRef = useRef<HTMLInputElement>(null);
   const invoiceRef = useRef<HTMLInputElement>(null);
+
+  const amount = useMemo(() => {
+    return signedProofs?.reduce((a, c) => a + c.amount, 0);
+  }, [signedProofs]);
+
+  const fee = useMemo(() => {
+    if (amount) {
+      return Math.max(3, Math.floor((amount / 100) * 0.02));
+    }
+    return 0;
+  }, [amount]);
   return (
     <div>
       <p>Paste your token here</p>
       <div className="flex flex-col">
         <input ref={inputRef} />
+        {error ? <p className="text-red-500 text-sm">{error}</p> : undefined}
         <button
           onClick={async () => {
+            setError("");
             if (inputRef.current) {
               const token = inputRef.current.value;
-              const decodedToken = getDecodedToken(token);
-              console.log(decodedToken);
-              const sigs = await createSignatures(decodedToken);
-              setSignedProofs(sigs);
+              try {
+                const signedProofs = await createSignedProofs(token);
+                setSignedProofs(signedProofs);
+              } catch (e) {
+                if (e instanceof Error) {
+                  setError(e.message);
+                }
+              }
             }
           }}
         >
           Parse Token
         </button>
       </div>
-      {signedProofs ? (
+      {signedProofs && !error ? (
         <div>
-          <p>Paste Invoice here</p>
+          <p>Paste Invoice for {amount! - fee} SATS</p>
           <div>
             <input ref={invoiceRef} />
             <button
