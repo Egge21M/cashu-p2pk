@@ -4,16 +4,14 @@ import {
   CashuMint,
   CashuWallet,
   Proof,
+  Token,
   getDecodedToken,
 } from "@cashu/cashu-ts";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 
-const mint = "https://testnut.cashu.space";
-
-async function createSignedProofs(token: string) {
-  const decodedToken = getDecodedToken(token);
-  const tokenEntries = decodedToken.token;
+async function createSignedProofs(token: Token) {
+  const tokenEntries = token.token;
   const proofs = tokenEntries.map((entry) => entry.proofs).flat();
   const allSignedProofs: SignedProof[] = [];
   for (let i = 0; i < proofs.length; i++) {
@@ -29,23 +27,29 @@ async function createSignedProofs(token: string) {
   return allSignedProofs;
 }
 
-// function isValidP2pkToken(token: Token, pubkey: string) {
-// const tokenEntries = token.token;
-// const proofs = tokenEntries.map((entry) => entry.proofs).flat();
-// for (let i = 0; i < proofs.length; i++) {
-// const parsedSecret = JSON.parse(proofs[i].secret);
-// if (parsedSecret[0] !== "P2PK" || parsedSecret[1].data !== pubkey) {
-// return false;
-//}
-//}
-// return true;
-// }
+function isValidP2pkToken(token: Token, pubkey: string, mint: string) {
+  const tokenEntries = token.token;
+  tokenEntries.forEach((entry) => {
+    if (entry.mint !== mint) {
+      return false;
+    }
+  });
+  const proofs = tokenEntries.map((entry) => entry.proofs).flat();
+  for (let i = 0; i < proofs.length; i++) {
+    const parsedSecret = JSON.parse(proofs[i].secret);
+    if (parsedSecret[0] !== "P2PK" || parsedSecret[1].data !== pubkey) {
+      return false;
+    }
+  }
+  return true;
+}
 
 type SignedProof = Proof & { witness: string };
 
 function App() {
   const [signedProofs, setSignedProofs] = useState<SignedProof[]>();
   const [error, setError] = useState<string>();
+  const [mint, setMint] = useState<string>();
   const inputRef = useRef<HTMLInputElement>(null);
   const invoiceRef = useRef<HTMLInputElement>(null);
 
@@ -71,7 +75,21 @@ function App() {
             if (inputRef.current) {
               const token = inputRef.current.value;
               try {
-                const signedProofs = await createSignedProofs(token);
+                const decodedToken = getDecodedToken(token);
+                const parsedMint = decodedToken.token[0].mint;
+                setMint(parsedMint);
+                const pubkey = JSON.parse(
+                  decodedToken.token[0].proofs[0].secret,
+                )[1].data;
+                const isValid = isValidP2pkToken(
+                  decodedToken,
+                  pubkey,
+                  parsedMint,
+                );
+                if (!isValid) {
+                  throw new Error("Invalid Token");
+                }
+                const signedProofs = await createSignedProofs(decodedToken);
                 setSignedProofs(signedProofs);
               } catch (e) {
                 if (e instanceof Error) {
@@ -91,7 +109,7 @@ function App() {
             <input ref={invoiceRef} />
             <button
               onClick={async () => {
-                if (!invoiceRef.current) {
+                if (!invoiceRef.current || !mint) {
                   return;
                 }
                 const wallet = new CashuWallet(new CashuMint(mint));
